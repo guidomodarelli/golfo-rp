@@ -27,6 +27,18 @@ Proceso de release compartido por los proyectos Golfo (golfo-ui, golfo-cleaner, 
 
 `golfo-rp ignore-build` compara la versión de `package.json` del commit desplegado con la de `HEAD^`. Imprime el motivo y, como última línea, `BUILD` o `SKIP`, y sale con `0`. Si no puede decidir, sale con `2`.
 
+El gate nunca buildea una versión menor que la de `HEAD^`. Para volver atrás hay dos caminos:
+
+- **Inmediato:** [Instant Rollback](https://vercel.com/docs/instant-rollback) de Vercel vuelve a servir el artefacto de un deployment anterior, sin build ni commit.
+- **Definitivo:** revertí el código en `main` y publicalo como una versión nueva. Si `1.4.3` falla, `1.4.4` lleva el código de `1.4.2`:
+
+  ```sh
+  git revert --no-edit <commits de 1.4.3>
+  pnpm create-version --patch
+  ```
+
+  Revertí solo el código. `package.json`, los `versionFiles` y `.golfo-rp/release.json` los actualiza `create-version`. Así cada número de versión corresponde a un único build, y el release siguiente sigue la regla de siempre.
+
 El `ignoreCommand` de Vercel corre antes de instalar dependencias. Por eso cada proyecto usa un wrapper que buildea solo cuando la última línea es `BUILD`: cualquier otra salida, incluido un fallo de `npx` o de red, saltea el build.
 
 ```bash
