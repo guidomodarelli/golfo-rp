@@ -52,20 +52,22 @@ function runGit(gitArguments, workingDirectory) {
  * Creates a repository with one commit per `package.json` version.
  *
  * @param {(string | null)[]} versions - Versions in commit order; `null` commits a manifest without version.
+ * @param {string[]} [lastCommitTrailers] - Trailers to add to the last commit.
  * @returns {string} Repository root.
  */
-function createRepositoryWithVersions(versions) {
+function createRepositoryWithVersions(versions, lastCommitTrailers = []) {
   const repositoryRoot = mkdtempSync(path.join(os.tmpdir(), "golfo-rp-gate-"));
   temporaryDirectories.push(repositoryRoot);
   runGit(["init", "--quiet"], repositoryRoot);
   runGit(["config", "user.email", "release@example.test"], repositoryRoot);
   runGit(["config", "user.name", "Release Fixture"], repositoryRoot);
 
-  for (const version of versions) {
+  for (const [index, version] of versions.entries()) {
     const manifest = version === null ? { name: "fixture" } : { name: "fixture", version };
     writeFileSync(path.join(repositoryRoot, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     runGit(["add", "-A"], repositoryRoot);
-    runGit(["commit", "--quiet", "--allow-empty", "-m", String(version)], repositoryRoot);
+    const trailers = index === versions.length - 1 ? lastCommitTrailers.flatMap((trailer) => ["--trailer", trailer]) : [];
+    runGit(["commit", "--quiet", "--allow-empty", "-m", String(version), ...trailers], repositoryRoot);
   }
 
   return repositoryRoot;
@@ -100,7 +102,7 @@ function commitFollowUpChange(repositoryRoot) {
 }
 
 /**
- * Clones the current `HEAD` of a repository with `--depth 1`, the way Vercel checks out a deployment.
+ * Clones the current `HEAD` of a repository with `--depth 1` to omit its parent.
  *
  * @param {string} repositoryRoot - Repository to clone.
  * @returns {string} Shallow checkout whose `HEAD` has no readable parent.
@@ -165,6 +167,42 @@ describe("build decision", () => {
 });
 
 describe("golfo-rp ignore-build", () => {
+  it("should build a rollback only on the commit that names the lower version", () => {
+    const root = createRepositoryWithVersions(["1.4.3", "1.4.2"], ["Golfo-Rp-Rollback: 1.4.2"]);
+
+    expect(runCli(root)).toEqual({
+      exitCode: 0,
+      lines: ["Version rollback: 1.4.3 -> 1.4.2. Building.", "BUILD"],
+    });
+    commitFollowUpChange(root);
+    expect(runCli(root).lines.at(-1)).toBe("SKIP");
+  }, GIT_FIXTURE_TEST_TIMEOUT_MS);
+
+  it.each([
+    ["a different target", "1.4.3", "1.4.2", "1.4.1"],
+    ["an unchanged version", "1.4.3", "1.4.3", "1.4.3"],
+    ["a version increase", "1.4.2", "1.4.3", "1.4.3"],
+    ["a prerelease target", "1.4.3", "1.4.2-beta.1", "1.4.2-beta.1"],
+  ])("should skip a rollback commit with %s", (_reason, previousVersion, version, target) => {
+    const root = createRepositoryWithVersions([previousVersion, version], [`Golfo-Rp-Rollback: ${target}`]);
+
+    expect(runCli(root).lines.at(-1)).toBe("SKIP");
+  }, GIT_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("should skip a rollback when its parent is unavailable", () => {
+    const root = createRepositoryWithVersions(["1.4.3", "1.4.2"], ["Golfo-Rp-Rollback: 1.4.2"]);
+
+    expect(runCli(cloneShallow(root)).lines.at(-1)).toBe("SKIP");
+  }, GIT_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("should defer a CI release even if the commit names a rollback target", () => {
+    const root = createRepositoryWithVersions(["1.4.3"]);
+    commitRelease(root, "1.4.2", { version: "1.4.2", execution: "ci" });
+    runGit(["commit", "--amend", "--no-edit", "--trailer", "Golfo-Rp-Rollback: 1.4.2"], root);
+
+    expect(runCli(root).lines).toEqual([expect.stringContaining("delegated to CI"), "SKIP"]);
+  }, GIT_FIXTURE_TEST_TIMEOUT_MS);
+
   it("should defer only the exact CI release while keeping ordinary local build decisions", () => {
     // Arrange, Act and Assert
     for (const { metadata, expectedDecision } of [
