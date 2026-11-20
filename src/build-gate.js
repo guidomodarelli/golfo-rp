@@ -6,8 +6,6 @@
  * unchanged, lower or skipped version (`1.0.0` → `3.0.0`) and any prerelease
  * or build-metadata version skip the build. When the previous version cannot
  * be read there is nothing to compare, so a stable version builds.
- * An explicit rollback trailer on the deployed commit allows a lower stable
- * version when both versions can be verified against that commit and its parent.
  *
  * A release delegated to CI is skipped only on the commit that changes
  * `.golfo-rp/release.json` against its first parent, the same commit scoping the
@@ -25,8 +23,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { BUILD_ROLLBACK_TRAILER, CURRENT_REVISION, GIT_DIFF_CHANGED_STATUS, PACKAGE_MANIFEST_FILE, PREVIOUS_REVISION } from "./constants/build-gate.js";
-import { compareReleaseVersions, isStableReleaseVersion, listAllowedVersionsAfter } from "./versions.js";
+import { CURRENT_REVISION, GIT_DIFF_CHANGED_STATUS, PACKAGE_MANIFEST_FILE, PREVIOUS_REVISION } from "./constants/build-gate.js";
+import { isStableReleaseVersion, listAllowedVersionsAfter } from "./versions.js";
 import { CI_RELEASE_METADATA_FILE, RELEASE_EXECUTION, RELEASE_EXECUTION_TRAILER } from "./constants/ci-release.js";
 
 /**
@@ -85,21 +83,23 @@ function readVersion(readManifest) {
 }
 
 /**
- * Reads values for a trailer on the deployed commit. A Git failure counts as "no trailer".
+ * Tells whether the deployed commit carries exactly one `Golfo-Rp-Execution: ci`
+ * trailer, the commit-local mark `create-version` writes in a release delegated
+ * to CI. A Git failure counts as "no trailer".
  *
  * @param {string} repositoryRoot - Checkout whose `HEAD` is being deployed.
- * @param {string} key - Git trailer key.
- * @returns {string[]} Trailer values in commit order.
+ * @returns {boolean} Whether `HEAD` declares a CI release execution.
  */
-function readCommitTrailers(repositoryRoot, key) {
-  const trailers = spawnSync("git", ["log", "-1", `--format=%(trailers:key=${key},valueonly=true,unfold=true)`, CURRENT_REVISION], {
+function hasCiReleaseTrailer(repositoryRoot) {
+  const trailers = spawnSync("git", ["log", "-1", `--format=%(trailers:key=${RELEASE_EXECUTION_TRAILER},valueonly=true)`, CURRENT_REVISION], {
     cwd: repositoryRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     windowsHide: true,
   });
-  if (trailers.status !== 0) return [];
-  return trailers.stdout.trim().split(/\r?\n/u).map((value) => value.trim()).filter(Boolean);
+  if (trailers.status !== 0) return false;
+  const recordedValues = [...new Set(trailers.stdout.split("\n").map((value) => value.trim()).filter(Boolean))];
+  return recordedValues.length === 1 && recordedValues[0] === RELEASE_EXECUTION.ci;
 }
 
 /**
@@ -117,10 +117,7 @@ function isReleaseMetadataCommit(repositoryRoot) {
     stdio: "ignore",
     windowsHide: true,
   });
-  if (parentLookup.status !== 0) {
-    const executionModes = new Set(readCommitTrailers(repositoryRoot, RELEASE_EXECUTION_TRAILER));
-    return executionModes.size === 1 && executionModes.has(RELEASE_EXECUTION.ci);
-  }
+  if (parentLookup.status !== 0) return hasCiReleaseTrailer(repositoryRoot);
   const metadataDiff = spawnSync("git", ["diff", "--quiet", PREVIOUS_REVISION, CURRENT_REVISION, "--", CI_RELEASE_METADATA_FILE], {
     cwd: repositoryRoot,
     stdio: "ignore",
@@ -154,20 +151,6 @@ export function decideBuildForCheckout(repositoryRoot) {
     } catch {
       return { shouldBuild: false, reason: "CI release metadata could not be read. Skipping build." };
     }
-  }
-
-  const rollbackTargets = readCommitTrailers(repositoryRoot, BUILD_ROLLBACK_TRAILER);
-  if (rollbackTargets.length > 0) {
-    if (
-      rollbackTargets.length === 1 &&
-      rollbackTargets[0] === currentVersion &&
-      currentVersion !== null && isStableReleaseVersion(currentVersion) &&
-      previousVersion !== null && isStableReleaseVersion(previousVersion) &&
-      compareReleaseVersions(currentVersion, previousVersion) < 0
-    ) {
-      return { shouldBuild: true, reason: `Version rollback: ${previousVersion} -> ${currentVersion}. Building.` };
-    }
-    return { shouldBuild: false, reason: `${BUILD_ROLLBACK_TRAILER} must name the checked-out stable version, lower than its parent's stable version. Skipping build.` };
   }
 
   return decideBuild(previousVersion, currentVersion);

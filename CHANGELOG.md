@@ -6,10 +6,6 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Unreleased]
 
-### Added
-
-- `golfo-rp ignore-build` admite reconstruir una versión estable anterior en Vercel cuando el commit de rollback incluye el trailer `Golfo-Rp-Rollback: X.Y.Z` con la versión de destino.
-
 ## [2.0.0] - 2026-10-19
 
 ### Changed

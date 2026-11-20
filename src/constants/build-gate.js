@@ -17,9 +17,6 @@ export const PREVIOUS_REVISION = "HEAD^";
 /** Git revision being deployed. */
 export const CURRENT_REVISION = "HEAD";
 
-/** Commit trailer whose value names the stable version to deploy on rollback. */
-export const BUILD_ROLLBACK_TRAILER = "Golfo-Rp-Rollback";
-
 /** `git diff --quiet` status reporting that the compared path changed between both revisions. */
 export const GIT_DIFF_CHANGED_STATUS = 1;
 
