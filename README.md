@@ -27,17 +27,23 @@ Proceso de release compartido por los proyectos Golfo (golfo-ui, golfo-cleaner, 
 
 `golfo-rp ignore-build` compara la versión de `package.json` del commit desplegado con la de `HEAD^`. Imprime el motivo y, como última línea, `BUILD` o `SKIP`, y sale con `0`. Si no puede decidir, sale con `2`.
 
-El gate nunca buildea una versión menor que la de `HEAD^`. Para volver atrás hay dos caminos:
+- **`BUILD`:** la versión es un `X.Y.Z` estable distinto del de `HEAD^`, más alto (un release) o más bajo (un rollback). También cuando no se puede leer la versión de `HEAD^`, por ejemplo en el primer commit.
+- **`SKIP`:** la versión no cambió, es un prerelease o tiene build metadata, o no se puede leer.
+
+Qué versión sigue lo decide `create-version`, no el gate: ofrece solo el siguiente patch, minor o major.
+
+Para volver atrás hay dos caminos:
 
 - **Inmediato:** [Instant Rollback](https://vercel.com/docs/instant-rollback) de Vercel vuelve a servir el artefacto de un deployment anterior, sin build ni commit.
-- **Definitivo:** revertí el código en `main` y publicalo como una versión nueva. Si `1.4.3` falla, `1.4.4` lleva el código de `1.4.2`:
+- **Con un build nuevo:** revertí los commits de la versión que falló, incluido su commit de versión, para que `package.json` vuelva a la anterior. Si `1.4.3` falla:
 
   ```sh
-  git revert --no-edit <commits de 1.4.3>
-  pnpm create-version --patch
+  git revert --no-edit v1.4.2..v1.4.3
   ```
 
-  Revertí solo el código. `package.json`, los `versionFiles` y `.golfo-rp/release.json` los actualiza `create-version`. Así cada número de versión corresponde a un único build, y el release siguiente sigue la regla de siempre.
+  El gate buildea `1.4.3 → 1.4.2` como rollback. El release siguiente parte de `1.4.2`, pero `1.4.3` ya tiene tag y `create-version` no puede volver a crearlo: elegí un bump cuyo tag no exista, por ejemplo `pnpm create-version --minor` (`1.5.0`).
+
+En un release delegado a CI, el commit de rollback puede restaurar `.golfo-rp/release.json` sin problema: un release de CI nunca baja la versión, así que el gate no lo toma como un release que espera a CI.
 
 El `ignoreCommand` de Vercel corre antes de instalar dependencias. Por eso cada proyecto usa un wrapper que buildea solo cuando la última línea es `BUILD`: cualquier otra salida, incluido un fallo de `npx` o de red, saltea el build.
 

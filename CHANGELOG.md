@@ -6,6 +6,11 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Unreleased]
 
+### Changed
+
+- `golfo-rp ignore-build` buildea toda versión estable distinta de la de `HEAD^`, también una más baja (un rollback) o una que saltea versiones. Antes solo buildeaba el siguiente patch, minor o major. La regla de qué versión sigue queda en `create-version`, y los fixtures de `@golfo/rp/testing` la siguen describiendo.
+- Un commit que baja la versión no cuenta como release delegado a CI aunque restaure `.golfo-rp/release.json`, en `golfo-rp ignore-build` y en el `.golfo-rp/vercel-ignore-build.mjs` generado: un release de CI nunca baja la versión.
+
 ## [2.0.0] - 2026-10-19
 
 ### Changed

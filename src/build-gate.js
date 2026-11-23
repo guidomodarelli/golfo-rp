@@ -1,11 +1,12 @@
 /**
  * Decides whether Vercel builds a commit (`vercel.json` → `ignoreCommand`).
  *
- * Only a stable `X.Y.Z` version that is the next patch, minor or major of the
- * previous commit's version ships, the same rule `create-version` applies. An
- * unchanged, lower or skipped version (`1.0.0` → `3.0.0`) and any prerelease
- * or build-metadata version skip the build. When the previous version cannot
- * be read there is nothing to compare, so a stable version builds.
+ * A commit ships when its stable `X.Y.Z` version differs from the previous
+ * commit's version, in either direction: a release raises it and a rollback
+ * lowers it. Which version comes next is `create-version`'s rule, not the gate's:
+ * it refuses a version whose tag already exists. An unchanged version and any
+ * prerelease or build-metadata version skip the build. When the previous version
+ * cannot be read there is nothing to compare, so a stable version builds.
  *
  * A release delegated to CI is skipped only on the commit that changes
  * `.golfo-rp/release.json` against its first parent, the same commit scoping the
@@ -14,7 +15,9 @@
  * untouched and fall through to the version rule. Without a readable parent
  * (shallow clone or first commit) the release commit is recognized by its own
  * `Golfo-Rp-Execution: ci` trailer, which later commits never carry, so the
- * deployment still waits for the release workflow.
+ * deployment still waits for the release workflow. A CI release never lowers the
+ * version, so a rollback that restores an older `.golfo-rp/release.json` is
+ * decided by the version rule and builds.
  *
  * @module build-gate
  */
@@ -24,7 +27,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { CURRENT_REVISION, GIT_DIFF_CHANGED_STATUS, PACKAGE_MANIFEST_FILE, PREVIOUS_REVISION } from "./constants/build-gate.js";
-import { isStableReleaseVersion, listAllowedVersionsAfter } from "./versions.js";
+import { compareReleaseVersions, isStableReleaseVersion } from "./versions.js";
 import { CI_RELEASE_METADATA_FILE, RELEASE_EXECUTION, RELEASE_EXECUTION_TRAILER } from "./constants/ci-release.js";
 
 /**
@@ -32,7 +35,24 @@ import { CI_RELEASE_METADATA_FILE, RELEASE_EXECUTION, RELEASE_EXECUTION_TRAILER 
  */
 
 /**
- * Decides whether a commit is built.
+ * Tells whether a commit lowers the stable version of its parent.
+ *
+ * @param {string | null} previousVersion - Version of the previous commit, or `null` when unreadable.
+ * @param {string | null} currentVersion - Version of the commit being deployed, or `null` when unreadable.
+ * @returns {boolean} Whether both versions are stable and the current one is lower.
+ */
+function isVersionRollback(previousVersion, currentVersion) {
+  return (
+    previousVersion !== null &&
+    currentVersion !== null &&
+    isStableReleaseVersion(previousVersion) &&
+    isStableReleaseVersion(currentVersion) &&
+    compareReleaseVersions(currentVersion, previousVersion) < 0
+  );
+}
+
+/**
+ * Decides whether a commit is built: a stable version that differs from the previous one ships.
  *
  * @param {string | null} previousVersion - Version of the previous commit, or `null` when unreadable.
  * @param {string | null} currentVersion - Version of the commit being deployed, or `null` when unreadable.
@@ -47,9 +67,7 @@ export function decideBuild(previousVersion, currentVersion) {
     return { shouldBuild: false, reason: `Version ${currentVersion} is not a stable X.Y.Z release. Skipping build.` };
   }
 
-  const allowedVersions = previousVersion === null ? null : listAllowedVersionsAfter(previousVersion);
-
-  if (allowedVersions === null) {
+  if (previousVersion === null) {
     return { shouldBuild: true, reason: `Previous package version could not be compared. Building stable ${currentVersion}.` };
   }
 
@@ -57,11 +75,8 @@ export function decideBuild(previousVersion, currentVersion) {
     return { shouldBuild: false, reason: "Version did not change. Skipping build." };
   }
 
-  if (!allowedVersions.includes(currentVersion)) {
-    return {
-      shouldBuild: false,
-      reason: `Version ${previousVersion} -> ${currentVersion} is not the next patch, minor or major (${allowedVersions.join(", ")}). Skipping build.`,
-    };
+  if (isVersionRollback(previousVersion, currentVersion)) {
+    return { shouldBuild: true, reason: `Version rolled back: ${previousVersion} -> ${currentVersion}. Building.` };
   }
 
   return { shouldBuild: true, reason: `Version changed: ${previousVersion} -> ${currentVersion}. Building.` };
@@ -146,7 +161,8 @@ export function decideBuildForCheckout(repositoryRoot) {
   if (existsSync(metadataPath)) {
     try {
       const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
-      const isDelegatedRelease = metadata.version === currentVersion && metadata.execution === RELEASE_EXECUTION.ci;
+      const isDelegatedRelease =
+        metadata.version === currentVersion && metadata.execution === RELEASE_EXECUTION.ci && !isVersionRollback(previousVersion, currentVersion);
       if (isDelegatedRelease && isReleaseMetadataCommit(repositoryRoot)) return { shouldBuild: false, reason: `Release ${currentVersion} is delegated to CI. Production deployment waits for its checks. Skipping build.` };
     } catch {
       return { shouldBuild: false, reason: "CI release metadata could not be read. Skipping build." };

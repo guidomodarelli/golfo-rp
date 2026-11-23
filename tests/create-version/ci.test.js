@@ -795,6 +795,28 @@ describe("local CI preparation with real Git", () => {
     expect(laterCommitGate.status, laterCommitGate.stderr).toBe(laterCommitStatus);
   }, GIT_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("should let a rollback that restores an older CI release metadata reach the build", async () => {
+    // Arrange
+    const { root } = createCiProject({ configured: false });
+    writeFileSync(path.join(root, "vercel.json"), JSON.stringify({}));
+    writeFileSync(path.join(root, "golfo-rp.config.mjs"), "export default { checks: ['node checks.mjs'] };\n");
+    runGit(["add", "vercel.json", "golfo-rp.config.mjs"], root);
+    runGit(["commit", "--quiet", "-m", "chore: configure deployment"], root);
+    runGit(["push", "--quiet", "origin", "main"], root);
+    isolateGithub();
+    const status = await runCreateVersion({ repositoryRoot: root, argv: ["--setup-ci", "--bump", "patch"] });
+    const manifest = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
+    writeFileSync(path.join(root, "package.json"), `${JSON.stringify({ ...manifest, version: "1.2.3" }, null, 2)}\n`);
+    writeFileSync(path.join(root, ".golfo-rp/release.json"), JSON.stringify({ version: "1.2.3", execution: "ci" }));
+    runGit(["commit", "--quiet", "-am", "revert: restore 1.2.3"], root);
+    // Act
+    const rollbackGate = runVercelGate(root);
+    // Assert
+    expect(status).toBe(0);
+    expect(rollbackGate.status, rollbackGate.stderr).toBe(1);
+    expect(rollbackGate.stdout).not.toContain("El release está en CI");
+  }, GIT_FIXTURE_TEST_TIMEOUT_MS);
+
   it.each([".env", ".vercel/project.json"])("should reject Vercel setup without creating a release when the worker would overwrite tracked %s", async (trackedPath) => {
     // Arrange
     const { root, remote } = createCiProject({ configured: false });
