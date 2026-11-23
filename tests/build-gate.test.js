@@ -13,6 +13,16 @@ import {
   REJECTED_VERSION_BUMP_CASES,
 } from "../src/testing.js";
 
+/** Rejected bumps of `create-version` that are still a different stable version, which the gate builds. */
+const STABLE_VERSION_CHANGES = [
+  "lower",
+  "skips patches",
+  "skips minors",
+  "skips majors",
+  "minor bump without resetting the patch",
+  "major bump without resetting minor and patch",
+];
+
 /** Real Git fixtures can exceed the default timeout on Windows. */
 const GIT_FIXTURE_TEST_TIMEOUT_MS = 60_000;
 
@@ -139,8 +149,23 @@ describe("build decision", () => {
     expect(decideBuild(CURRENT_STABLE_VERSION, version)).toEqual({ shouldBuild: true, reason: expect.stringContaining("Building") });
   });
 
-  it.each(REJECTED_VERSION_BUMP_CASES)("should skip the build when the bump is %s (%j)", (_reason, version) => {
-    expect(decideBuild(CURRENT_STABLE_VERSION, version)).toEqual({ shouldBuild: false, reason: expect.stringContaining("Skipping build") });
+  it.each(REJECTED_VERSION_BUMP_CASES.filter(([reason]) => STABLE_VERSION_CHANGES.includes(reason)))(
+    "should build any other stable version, also one create-version rejects because it %s (%j)",
+    (_reason, version) => {
+      expect(decideBuild(CURRENT_STABLE_VERSION, version)).toEqual({ shouldBuild: true, reason: expect.stringContaining("Building") });
+    }
+  );
+
+  it.each(REJECTED_VERSION_BUMP_CASES.filter(([reason]) => !STABLE_VERSION_CHANGES.includes(reason)))(
+    "should skip the build when the version is %s (%j)",
+    (_reason, version) => {
+      expect(decideBuild(CURRENT_STABLE_VERSION, version)).toEqual({ shouldBuild: false, reason: expect.stringContaining("Skipping build") });
+    }
+  );
+
+  it("should name a lower stable version as a rollback", () => {
+    expect(decideBuild("1.4.3", "1.4.2")).toEqual({ shouldBuild: true, reason: "Version rolled back: 1.4.3 -> 1.4.2. Building." });
+    expect(decideBuild("1.4.2", "1.4.4")).toEqual({ shouldBuild: true, reason: "Version changed: 1.4.2 -> 1.4.4. Building." });
   });
 
   it("should never build prerelease or build-metadata versions, even without a previous version", () => {
@@ -149,9 +174,9 @@ describe("build decision", () => {
     }
   });
 
-  it("should let a previous prerelease be followed by its own stable release", () => {
+  it("should build a stable version that follows a prerelease", () => {
     expect(decideBuild("1.0.0-beta.1", "1.0.0").shouldBuild).toBe(true);
-    expect(decideBuild("1.0.1-beta.1", "1.0.0").shouldBuild).toBe(false);
+    expect(decideBuild("1.0.1-beta.1", "1.0.0").shouldBuild).toBe(true);
   });
 
   it("should build a stable version when the previous one cannot be compared", () => {
@@ -176,6 +201,18 @@ describe("golfo-rp ignore-build", () => {
       commitRelease(root, "1.2.4", metadata);
       expect(runCli(root).lines.at(-1)).toBe(expectedDecision);
     }
+  }, GIT_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("should build a rollback that restores an older CI release metadata, because a CI release never lowers the version", () => {
+    // Arrange
+    const root = createRepositoryWithVersions(["1.2.3"]);
+    commitRelease(root, "1.2.4", { version: "1.2.4", execution: "ci" });
+    commitRelease(root, "1.2.3", { version: "1.2.3", execution: "ci" });
+    // Act
+    const { exitCode, lines } = runCli(root);
+    // Assert
+    expect(exitCode).toBe(0);
+    expect(lines).toEqual(["Version rolled back: 1.2.4 -> 1.2.3. Building.", "BUILD"]);
   }, GIT_FIXTURE_TEST_TIMEOUT_MS);
 
   it("should skip only the commit that wrote the CI release metadata and let later commits reach the version rule", () => {
@@ -236,14 +273,28 @@ describe("golfo-rp ignore-build", () => {
   );
 
   it(
-    "should print SKIP for commits that keep, lower, skip or prerelease the version",
+    "should print SKIP for commits that keep, prerelease or drop the version",
     () => {
-      for (const versions of [["0.2.0", "0.2.0"], ["0.2.0", "0.1.9"], ["1.0.0", "3.0.0"], ["0.2.0", "0.3.0-beta.1"], ["0.2.0", null]]) {
+      for (const versions of [["0.2.0", "0.2.0"], ["0.2.0", "0.3.0-beta.1"], ["0.2.0", null]]) {
         const { exitCode, lines } = runCli(createRepositoryWithVersions(versions));
 
         expect(exitCode).toBe(0);
         expect(lines.at(-1)).toBe("SKIP");
       }
+    },
+    GIT_FIXTURE_TEST_TIMEOUT_MS
+  );
+
+  it(
+    "should print BUILD for a rollback and for a release after it, also when it skips the version already used",
+    () => {
+      const root = createRepositoryWithVersions(["1.4.3", "1.4.2"]);
+      const rollback = runCli(root);
+      commitRelease(root, "1.4.4", { version: "1.4.4", execution: "local" });
+      const release = runCli(root);
+
+      expect(rollback.lines).toEqual(["Version rolled back: 1.4.3 -> 1.4.2. Building.", "BUILD"]);
+      expect(release.lines).toEqual(["Version changed: 1.4.2 -> 1.4.4. Building.", "BUILD"]);
     },
     GIT_FIXTURE_TEST_TIMEOUT_MS
   );

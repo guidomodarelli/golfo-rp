@@ -6,6 +6,8 @@
  * untouched and fall through to the original gate. Without a readable parent (shallow clone or
  * first commit) the release commit is recognized by its own `Golfo-Rp-Execution: ci` trailer,
  * which later commits never carry, so the gate stays closed until the release workflow deploys.
+ * A CI release never lowers the version: a rollback that restores an older metadata file goes to
+ * the original gate.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -19,6 +21,8 @@ const GIT_DIFF_CHANGED_STATUS = 1;
 const RELEASE_EXECUTION_TRAILER = 'Golfo-Rp-Execution';
 /** Trailer value of a release whose deployment is delegated to CI. */
 const CI_RELEASE_EXECUTION = 'ci';
+/** Stable `X.Y.Z` version without leading zeros (mirrors `isStableReleaseVersion`). */
+const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 /**
  * Runs a read-only Git command in the deployed checkout.
@@ -45,12 +49,33 @@ function isReleaseMetadataCommit() {
   return changed.status === GIT_DIFF_CHANGED_STATUS;
 }
 
+/**
+ * @param {unknown} currentVersion - Version of the deployed `package.json`.
+ * @returns {boolean} Whether it is a stable version lower than the stable version of the parent commit.
+ */
+function isVersionRollback(currentVersion) {
+  const parentManifest = runGit(['show', `${PARENT_REVISION}:package.json`]);
+  if (parentManifest.status !== 0) return false;
+  let previousVersion;
+  try {
+    previousVersion = JSON.parse(parentManifest.stdout).version;
+  } catch {
+    return false;
+  }
+  const current = STABLE_VERSION_PATTERN.exec(String(currentVersion));
+  const previous = STABLE_VERSION_PATTERN.exec(String(previousVersion));
+  if (!current || !previous) return false;
+  const difference = [1, 2, 3].map((index) => Number(current[index]) - Number(previous[index])).find((part) => part !== 0);
+  return difference !== undefined && difference < 0;
+}
+
 let delegated = false;
 try {
   if (existsSync(RELEASE_METADATA_FILE)) {
     const metadata = JSON.parse(readFileSync(RELEASE_METADATA_FILE, 'utf8'));
     const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
-    delegated = metadata.execution === 'ci' && metadata.version === manifest.version && isReleaseMetadataCommit();
+    delegated =
+      metadata.execution === 'ci' && metadata.version === manifest.version && isReleaseMetadataCommit() && !isVersionRollback(manifest.version);
   }
 } catch {
   console.error('No se pudo leer la metadata del release; se omite el despliegue automático.');

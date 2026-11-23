@@ -1,8 +1,9 @@
 /**
  * Version bump fixtures for the test suites of every repository that uses
- * `golfo-rp`, so `create-version`, the Vercel build gate and any custom release
- * command are checked against the same rule: from a stable version only the
- * next patch, minor or major is allowed.
+ * `golfo-rp`, so `create-version` and any custom release command are checked
+ * against the same rule: from a stable version only the next patch, minor or
+ * major is allowed. The Vercel build gate is wider: it builds any stable version
+ * that differs from the previous one, so a rollback ships too.
  *
  * @module testing
  */
